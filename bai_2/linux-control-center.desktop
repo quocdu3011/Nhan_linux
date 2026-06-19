@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Control Center
+Comment=Quản lý tiến trình, file, socket và network
+Exec=linux-control-center
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Utility;
+Keywords=process;file;socket;network;ubuntu;

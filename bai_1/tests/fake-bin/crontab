@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${FAKE_CRONTAB_FILE:?FAKE_CRONTAB_FILE chưa được đặt}"
+
+case "${1:-}" in
+    -l)
+        [[ -f "$FAKE_CRONTAB_FILE" ]] && cat "$FAKE_CRONTAB_FILE" || exit 1
+        ;;
+    -)
+        cat > "$FAKE_CRONTAB_FILE"
+        ;;
+    *)
+        printf 'crontab giả lập chỉ hỗ trợ -l và -\n' >&2
+        exit 2
+        ;;
+esac
