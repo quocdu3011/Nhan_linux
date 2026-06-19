@@ -1,9 +1,12 @@
 #include <QtWidgets>
 #include <QtNetwork>
+#include <QtConcurrent>
 
 #include <algorithm>
+#include <atomic>
 #include <csignal>
 #include <filesystem>
+#include <memory>
 #include <pwd.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -34,6 +37,38 @@ static void configureModel(QStandardItemModel *model, const QStringList &headers
     model->setHorizontalHeaderLabels(headers);
 }
 
+class TreeBranchStyle final : public QProxyStyle {
+public:
+    using QProxyStyle::QProxyStyle;
+
+    void drawPrimitive(PrimitiveElement element, const QStyleOption *option,
+                       QPainter *painter, const QWidget *widget = nullptr) const override {
+        if (element != PE_IndicatorBranch) {
+            QProxyStyle::drawPrimitive(element, option, painter, widget);
+            return;
+        }
+        if (!(option->state & State_Children)) return;
+
+        const QPoint center = option->rect.center();
+        QPolygon triangle;
+        if (option->state & State_Open) {
+            triangle << QPoint(center.x() - 5, center.y() - 3)
+                     << QPoint(center.x() + 5, center.y() - 3)
+                     << QPoint(center.x(), center.y() + 5);
+        } else {
+            triangle << QPoint(center.x() - 3, center.y() - 5)
+                     << QPoint(center.x() - 3, center.y() + 5)
+                     << QPoint(center.x() + 5, center.y());
+        }
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#a99bff"));
+        painter->drawPolygon(triangle);
+        painter->restore();
+    }
+};
+
 class MainWindow final : public QMainWindow {
 public:
     MainWindow() {
@@ -48,6 +83,8 @@ public:
         connect(timer, &QTimer::timeout, this, [this] { refreshDashboard(); });
         timer->start(5000);
     }
+
+    ~MainWindow() override { ++(*fileSizeGeneration_); }
 
 private:
     QStackedWidget *pages_{};
@@ -68,7 +105,7 @@ private:
     QSortFilterProxyModel *socketProxy_{};
     QSortFilterProxyModel *networkProxy_{};
     QTableView *processTable_{};
-    QTableView *fileTable_{};
+    QTreeView *fileTable_{};
     QTableView *socketTable_{};
     QTableView *networkTable_{};
     QLineEdit *pathEdit_{};
@@ -76,6 +113,7 @@ private:
     QLineEdit *pingHost_{};
     QProcess *pingProcess_{};
     QString currentPath_;
+    std::shared_ptr<std::atomic_int> fileSizeGeneration_ = std::make_shared<std::atomic_int>(0);
 
     const QStringList titles_ = {"Tổng quan", "Tiến trình", "Quản lý file", "Socket", "Network"};
     const QStringList subtitles_ = {
@@ -109,6 +147,8 @@ private:
         proxy->setFilterKeyColumn(-1);
         proxy->setSortCaseSensitivity(Qt::CaseInsensitive);
         proxy->setDynamicSortFilter(true);
+        proxy->setRecursiveFilteringEnabled(true);
+        proxy->setAutoAcceptChildRows(true);
         return proxy;
     }
 
@@ -125,6 +165,25 @@ private:
         table->horizontalHeader()->setStretchLastSection(true);
         table->setShowGrid(false);
         return table;
+    }
+
+    static QTreeView *treeFor(QAbstractItemModel *model) {
+        auto *tree = new QTreeView;
+        tree->setModel(model);
+        tree->setAlternatingRowColors(true);
+        tree->setSelectionBehavior(QAbstractItemView::SelectRows);
+        tree->setSelectionMode(QAbstractItemView::SingleSelection);
+        tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        tree->setSortingEnabled(true);
+        tree->setRootIsDecorated(true);
+        tree->setItemsExpandable(true);
+        tree->setExpandsOnDoubleClick(false);
+        tree->setIndentation(22);
+        tree->header()->setStretchLastSection(true);
+        auto *branchStyle = new TreeBranchStyle;
+        branchStyle->setParent(tree);
+        tree->setStyle(branchStyle);
+        return tree;
     }
 
     QWidget *card(const QString &caption, QLabel **value, const QString &accent) {
@@ -286,7 +345,7 @@ private:
         fileModel_ = new QStandardItemModel(this);
         configureModel(fileModel_, {"Tên", "Loại", "Kích thước", "Quyền", "Cập nhật"});
         fileProxy_ = proxyFor(fileModel_, this);
-        fileTable_ = tableFor(fileProxy_);
+        fileTable_ = treeFor(fileProxy_);
         fileTable_->setColumnWidth(0, 330);
         fileTable_->setColumnWidth(1, 100);
         fileTable_->setColumnWidth(2, 110);
@@ -316,7 +375,15 @@ private:
         connect(create, &QPushButton::clicked, this, [this] { createDirectory(); });
         connect(rename, &QPushButton::clicked, this, [this] { renameSelectedFile(); });
         connect(remove, &QPushButton::clicked, this, [this] { deleteSelectedFile(); });
-        connect(fileTable_, &QTableView::doubleClicked, this, [this](const QModelIndex &) { openSelectedFile(); });
+        connect(fileTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex &) { openSelectedFile(); });
+        connect(fileTable_, &QTreeView::expanded, this, [this](const QModelIndex &proxyIndex) {
+            const QModelIndex sourceIndex = fileProxy_->mapToSource(proxyIndex.siblingAtColumn(0));
+            QStandardItem *item = fileModel_->itemFromIndex(sourceIndex);
+            if (!item || item->data(Qt::UserRole + 1).toBool()) return;
+            item->setData(true, Qt::UserRole + 1);
+            item->removeRows(0, item->rowCount());
+            populateFileItems(item, item->data(Qt::UserRole).toString());
+        });
         actions->addWidget(filter, 1); actions->addWidget(open); actions->addWidget(create); actions->addWidget(rename); actions->addWidget(remove);
         layout->addLayout(actions);
         auto *frame = new QFrame; frame->setProperty("card", true);
@@ -384,6 +451,7 @@ private:
         qApp->setStyleSheet(R"CSS(
             * { color:#e8ebf5; }
             QMainWindow, QWidget { background:#0f1220; }
+            QLabel { background-color:transparent; }
             #sidebar { background:#171a2b; border-right:1px solid #272b43; }
             #brand { color:#a99bff; font-size:18px; font-weight:800; letter-spacing:2px; }
             #pageTitle { font-size:27px; font-weight:750; }
@@ -405,8 +473,8 @@ private:
             QPushButton[nav="true"]:checked { background:#2d2851; color:#b9adff; border-left:3px solid #8c75ff; }
             QLineEdit, QTextEdit { background:#151829; border:1px solid #303651; border-radius:10px; padding:8px 12px; selection-background-color:#7057e8; }
             QLineEdit:focus, QTextEdit:focus { border:1px solid #7863eb; }
-            QTableView { background:#191d30; alternate-background-color:#1d2135; border:0; border-radius:14px; selection-background-color:#393466; gridline-color:#292e48; }
-            QTableView::item { padding:7px; border-bottom:1px solid #252a42; }
+            QTableView, QTreeView { background:#191d30; alternate-background-color:#1d2135; border:0; border-radius:14px; selection-background-color:#393466; gridline-color:#292e48; }
+            QTableView::item, QTreeView::item { padding:7px; border-bottom:1px solid #252a42; }
             QHeaderView::section { background:#20243a; color:#aeb4c8; padding:10px; border:0; border-right:1px solid #2c314b; font-weight:700; }
             QScrollBar:vertical { width:10px; background:#171a2b; }
             QScrollBar::handle:vertical { background:#3b405b; border-radius:5px; min-height:25px; }
@@ -530,21 +598,80 @@ private:
     }
 
     void refreshFiles() {
+        ++(*fileSizeGeneration_);
         configureModel(fileModel_, {"Tên", "Loại", "Kích thước", "Quyền", "Cập nhật"});
-        QDir dir(currentPath_);
-        const QFileInfoList entries = dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden,
-                                                         QDir::DirsFirst | QDir::IgnoreCase | QDir::Name);
+        const int count = populateFileItems(nullptr, currentPath_);
+        statusBar()->showMessage(QString("%1 mục trong %2").arg(count).arg(currentPath_), 3000);
+    }
+
+    int populateFileItems(QStandardItem *parent, const QString &path) {
+        QDir dir(path);
+        const QFileInfoList entries = dir.entryInfoList(
+            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden,
+            QDir::DirsFirst | QDir::IgnoreCase | QDir::Name);
+        QStringList directories;
         for (const QFileInfo &info : entries) {
-            auto *name = new QStandardItem((info.isDir() ? "▸  " : "   ") + info.fileName());
+            auto *name = new QStandardItem(info.fileName());
             name->setData(info.absoluteFilePath(), Qt::UserRole);
+            const bool realDirectory = info.isDir() && !info.isSymLink();
+            name->setData(!realDirectory, Qt::UserRole + 1);
             QList<QStandardItem*> row{name,
                 new QStandardItem(info.isSymLink() ? "Liên kết" : info.isDir() ? "Thư mục" : "File"),
-                new QStandardItem(info.isDir() ? "—" : humanBytes(info.size())),
+                new QStandardItem(realDirectory ? "Đang tính…" : humanBytes(info.size())),
                 new QStandardItem(permissionString(info.permissions())),
                 new QStandardItem(info.lastModified().toString("dd/MM/yyyy HH:mm"))};
-            fileModel_->appendRow(row);
+            if (parent) parent->appendRow(row); else fileModel_->appendRow(row);
+            if (realDirectory) {
+                directories << info.absoluteFilePath();
+                QList<QStandardItem*> placeholder{new QStandardItem("Đang tải…")};
+                while (placeholder.size() < fileModel_->columnCount()) placeholder << new QStandardItem;
+                name->appendRow(placeholder);
+            }
         }
-        statusBar()->showMessage(QString("%1 mục trong %2").arg(entries.size()).arg(currentPath_), 3000);
+        startDirectorySizeCalculation(directories);
+        return entries.size();
+    }
+
+    void startDirectorySizeCalculation(const QStringList &directories) {
+        if (directories.isEmpty() || qApp->property("selfTest").toBool()) return;
+        const int generation = fileSizeGeneration_->load();
+        auto *watcher = new QFutureWatcher<QHash<QString, qulonglong>>(this);
+        const auto generationState = fileSizeGeneration_;
+        connect(watcher, &QFutureWatcher<QHash<QString, qulonglong>>::finished, this,
+                [this, watcher, generation, generationState] {
+            const QHash<QString, qulonglong> sizes = watcher->result();
+            watcher->deleteLater();
+            if (generationState->load() != generation) return;
+            for (auto it = sizes.cbegin(); it != sizes.cend(); ++it) {
+                const QModelIndexList matches = fileModel_->match(
+                    fileModel_->index(0, 0), Qt::UserRole, it.key(), -1,
+                    Qt::MatchExactly | Qt::MatchRecursive);
+                for (const QModelIndex &index : matches) {
+                    QStandardItem *nameItem = fileModel_->itemFromIndex(index);
+                    QStandardItem *sizeItem = nameItem->parent()
+                        ? nameItem->parent()->child(nameItem->row(), 2)
+                        : fileModel_->item(nameItem->row(), 2);
+                    if (sizeItem) sizeItem->setText(humanBytes(it.value()));
+                }
+            }
+            statusBar()->showMessage("Đã tính xong kích thước thư mục", 3000);
+        });
+        watcher->setFuture(QtConcurrent::run([directories, generation, generationState] {
+            QHash<QString, qulonglong> sizes;
+            for (const QString &path : directories) {
+                if (generationState->load() != generation) return sizes;
+                qulonglong total = 0;
+                QDirIterator iterator(path, QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks,
+                                      QDirIterator::Subdirectories);
+                while (iterator.hasNext()) {
+                    if (generationState->load() != generation) return sizes;
+                    iterator.next();
+                    total += static_cast<qulonglong>(std::max<qint64>(0, iterator.fileInfo().size()));
+                }
+                sizes.insert(path, total);
+            }
+            return sizes;
+        }));
     }
 
     QString selectedFilePath() const {
@@ -695,6 +822,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("Linux Control Center");
     QApplication::setApplicationVersion("1.0.0");
+    app.setProperty("selfTest", selfTest);
     MainWindow window;
     if (selfTest) {
         QTimer::singleShot(250, &app, [&app] { qInfo() << "SELF-TEST PASS"; app.quit(); });

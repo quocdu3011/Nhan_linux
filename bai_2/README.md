@@ -6,7 +6,7 @@
 
 - **Dashboard:** tổng quan số tiến trình, socket, giao diện mạng, bộ nhớ và thông tin hệ thống.
 - **Tiến trình:** đọc trực tiếp `/proc`, tìm kiếm, xem PID/user/trạng thái/RAM/CPU time/câu lệnh, gửi `SIGTERM` hoặc `SIGKILL`.
-- **File:** duyệt thư mục, mở thư mục bằng double-click, quay lên thư mục cha, tạo thư mục, đổi tên, xóa file/thư mục và xem quyền/kích thước/thời gian sửa.
+- **File:** duyệt theo cây thư mục bằng nút tam giác, mở bằng double-click, quay lên thư mục cha, tạo thư mục, đổi tên, xóa và xem quyền/kích thước/thời gian sửa. Nhánh cây được tải khi mở; kích thước thư mục được tính đệ quy ở background để không khóa giao diện.
 - **Socket:** xem TCP/UDP qua `ss`, lọc kết quả, xem local/peer/process và kết thúc tiến trình sở hữu socket.
 - **Network:** đọc interface bằng `getifaddrs`, địa chỉ IPv4/IPv6, trạng thái và lưu lượng RX/TX từ sysfs; bật/tắt interface qua PolicyKit; ping host không khóa giao diện.
 - Xác nhận trước thao tác phá hủy, thông báo lỗi rõ ràng và không chạy toàn bộ ứng dụng bằng root.
