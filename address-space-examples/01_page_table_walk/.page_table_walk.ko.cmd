@@ -1,0 +1,1 @@
+savedcmd_page_table_walk.ko := ld -r -m elf_x86_64 -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/src/linux-headers-6.17.0-35-generic/scripts/module.lds -o page_table_walk.ko page_table_walk.o page_table_walk.mod.o .module-common.o

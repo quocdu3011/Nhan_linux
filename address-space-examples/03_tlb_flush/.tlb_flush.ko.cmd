@@ -1,0 +1,1 @@
+savedcmd_tlb_flush.ko := ld -r -m elf_x86_64 -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/src/linux-headers-6.17.0-35-generic/scripts/module.lds -o tlb_flush.ko tlb_flush.o tlb_flush.mod.o .module-common.o
